@@ -1,0 +1,12 @@
+{
+  "name": "@be-human/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:e2e": "playwright test" },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.0.1"
+  }
+}

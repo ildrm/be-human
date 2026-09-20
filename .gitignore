@@ -1,0 +1,10 @@
+node_modules/
+.next/
+dist/
+coverage/
+.env
+.npm-cache/
+.pnpm-store/
+playwright-report/
+test-results/
+*.log

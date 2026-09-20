@@ -1,0 +1,34 @@
+{
+  "name": "be-human",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @be-human/api --filter @be-human/web dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm --filter @be-human/domain build && pnpm -r --if-present typecheck && tsc -p tsconfig.scripts.json",
+    "lint": "pnpm --filter @be-human/domain build && pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:e2e": "pnpm --filter @be-human/e2e test:e2e",
+    "test:coverage": "pnpm -r --if-present test:coverage",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "worker": "tsx scripts/worker.ts"
+  },
+  "dependencies": {
+    "argon2": "0.44.0",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.1",
+    "@types/pg": "8.15.5",
+    "tsx": "4.20.6",
+    "typescript": "6.0.2"
+  }
+}

@@ -1,0 +1,78 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: be_human
+          POSTGRES_USER: be_human
+          POSTGRES_PASSWORD: be_human_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U be_human -d be_human"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://be_human:be_human_test@localhost:5432/be_human
+      SESSION_SECRET: ci-only-session-secret-that-is-never-used-in-production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.15.1 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: pnpm }
+      - name: Install and verify dependency provenance
+        run: pnpm install --frozen-lockfile
+        env:
+          PNPM_CONFIG_TRUST_LOCKFILE: "false"
+      - run: pnpm db:migrate
+      - run: pnpm db:seed
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - run: pnpm test:e2e
+      - run: pnpm audit --audit-level high
+      - run: docker compose build
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with: { path: '.', format: 'cyclonedx-json', output-file: 'sbom.cdx.json' }
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: sbom.cdx.json }
+
+  container-scan:
+    runs-on: ubuntu-latest
+    needs: quality
+    env:
+      SESSION_SECRET: ci-only-session-secret-that-is-never-used-in-production
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose build
+      - name: Scan repository and lockfile
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: be-human-api:latest
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+      - name: Scan web image
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: be-human-web:latest
+          severity: CRITICAL,HIGH
+          exit-code: '1'

@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1.7
+FROM node:24-alpine
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN npm install --global pnpm@11.15.1
+WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile --filter .
+COPY database database
+COPY scripts scripts
+COPY tsconfig.base.json ./
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /workspace
+USER app
+CMD ["pnpm", "db:migrate"]
