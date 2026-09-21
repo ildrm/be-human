@@ -69,6 +69,13 @@ class Who5Dto {
   @IsArray() @ArrayMinSize(5) @ArrayMaxSize(5) @IsInt({ each: true }) @Min(0, { each: true }) @Max(5, { each: true }) items!: number[];
 }
 
+class CapacityCorrectionDto {
+  @IsInt() @Min(0) @Max(100) physical!: number;
+  @IsInt() @Min(0) @Max(100) cognitive!: number;
+  @IsInt() @Min(0) @Max(100) emotional!: number;
+  @IsInt() @Min(0) @Max(100) executive!: number;
+}
+
 @ApiTags('system') @Controller()
 export class HealthController {
   constructor(private readonly db: DbService) {}
@@ -146,8 +153,18 @@ export class TodayController {
   @Get() @UseGuards(SessionGuard) @ApiCookieAuth() async get(@Req() request: FastifyRequest) {
     const user = currentUser(request);
     const profile = await this.db.query<{ timezone: string }>('SELECT timezone FROM app_user WHERE id=$1', [user.id]);
-    const plan = await this.db.query(`SELECT p.id,p.plan_date AS "planDate",p.operating_mode AS mode,p.feasible,p.explanation,COALESCE(json_agg(json_build_object('id',i.id,'title',i.title,'startsAt',i.starts_at,'endsAt',i.ends_at,'fixed',i.fixed,'essential',i.essential,'status',i.status) ORDER BY i.starts_at) FILTER (WHERE i.id IS NOT NULL),'[]') AS items FROM plan p LEFT JOIN plan_item i ON i.plan_id=p.id WHERE p.user_id=$1 GROUP BY p.id ORDER BY p.plan_date DESC,p.created_at DESC LIMIT 1`, [user.id]);
+    const plan = await this.db.query(`SELECT p.id,p.plan_date AS "planDate",p.operating_mode AS mode,p.feasible,p.explanation,COALESCE(json_agg(json_build_object('id',i.id,'title',i.title,'startsAt',i.starts_at,'endsAt',i.ends_at,'fixed',i.fixed,'essential',i.essential,'status',i.status,'demand',i.demand) ORDER BY i.starts_at) FILTER (WHERE i.id IS NOT NULL),'[]') AS items FROM plan p LEFT JOIN plan_item i ON i.plan_id=p.id WHERE p.user_id=$1 GROUP BY p.id ORDER BY (p.plan_date=CURRENT_DATE) DESC,p.plan_date DESC,p.created_at DESC LIMIT 1`, [user.id]);
     const goals = await this.db.query(`SELECT id,title,level,status FROM goal WHERE user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 5`, [user.id]);
-    return { data: { greeting: `Good morning, ${user.displayName}`, timezone: profile.rows[0]?.timezone ?? 'UTC', plan: plan.rows[0] ?? null, goals: goals.rows, capacity: null, bufferMinutes: null, confidence: 'unknown' } };
+    const capacity = await this.db.query<{ capacity: Record<string, number>; confidence: { level?: string } }>(`SELECT capacity,confidence FROM capacity_snapshot WHERE user_id=$1 ORDER BY observed_at DESC LIMIT 1`, [user.id]);
+    const currentPlan = plan.rows[0] as { explanation?: { bufferMinutes?: number } } | undefined;
+    return { data: { greeting: `Good morning, ${user.displayName}`, timezone: profile.rows[0]?.timezone ?? 'UTC', plan: currentPlan ?? null, goals: goals.rows, capacity: capacity.rows[0]?.capacity ?? null, bufferMinutes: currentPlan?.explanation?.bufferMinutes ?? 0, confidence: capacity.rows[0]?.confidence?.level ?? 'unknown' } };
+  }
+
+  @Post('capacity') @UseGuards(SessionGuard, CsrfGuard) @ApiCookieAuth() async correctCapacity(@Body() input: CapacityCorrectionDto, @Req() request: FastifyRequest) {
+    const user = currentUser(request);
+    const profile = await this.db.query<{ timezone: string }>('SELECT timezone FROM app_user WHERE id=$1', [user.id]);
+    const saved = await this.db.query<{ id: string; capacity: Record<string, number> }>(`INSERT INTO capacity_snapshot(user_id,observed_at,timezone,capacity,confidence,source) VALUES ($1,now(),$2,$3,$4,'self-correction') RETURNING id,capacity`, [user.id, profile.rows[0]?.timezone ?? 'UTC', JSON.stringify(input), JSON.stringify({ level: 'high', basis: 'self-reported' })]);
+    await this.db.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'correct','capacity_snapshot',$2,$3)`, [user.id, saved.rows[0]!.id, request.id]);
+    return { data: saved.rows[0] };
   }
 }

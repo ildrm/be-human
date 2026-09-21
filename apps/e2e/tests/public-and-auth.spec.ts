@@ -32,3 +32,33 @@ test('layout remains usable at a representative mobile viewport', async ({ page 
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await expect(page.getByRole('link', { name: /Open your private space/i })).toBeVisible();
 });
+
+test('authenticated planning controls open and persist a new item', async ({ page }, testInfo) => {
+  const title = `Playwright ${testInfo.project.name}`;
+  await page.goto('/login');
+  await page.getByLabel('Email').fill('alex@example.test');
+  await page.getByLabel('Password').fill('Demo-Only-Change-Me!');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Good morning, Alex.' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Open week plan' }).click();
+  await expect(page.getByRole('heading', { name: 'Your week plan' })).toBeVisible();
+  await expect(page.locator('.week-list article')).toHaveCount(7);
+  await page.getByRole('button', { name: 'Close panel' }).click();
+
+  await page.getByRole('button', { name: 'Add something' }).click();
+  await page.getByLabel('Title').fill(title);
+  await page.getByLabel('Start time').fill('14:10');
+  await page.getByRole('button', { name: 'Add to plan' }).click();
+  await expect(page.getByText(title)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText(title)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Explore your life map' }).click();
+  await expect(page.getByRole('heading', { name: 'Your life map' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close panel' }).click();
+
+  await page.getByRole('button', { name: `More options for ${title}` }).click();
+  await page.getByRole('button', { name: 'Remove' }).click();
+  await expect(page.getByText(`${title} removed.`)).toBeVisible();
+});

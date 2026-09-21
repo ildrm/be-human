@@ -69,6 +69,6 @@ Troubleshooting:
 - API not ready: inspect `docker compose logs migrate seed api postgres`.
 - Web cannot reach API: verify `API_INTERNAL_URL=http://api:3001/api/v1` in Compose.
 - Port conflict: change `WEB_PORT` or `API_PORT`, and update `WEB_ORIGIN` to match.
-- Browser tests on a fresh CI host: install engines with `pnpm exec playwright install --with-deps`.
+- Browser tests on a fresh CI host: install engines with `pnpm --filter @be-human/e2e exec playwright install --with-deps chromium firefox webkit`.
 
 The precise shipped scope and remaining release gates are maintained in `docs/implementation-status.md`.

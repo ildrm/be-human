@@ -2,7 +2,9 @@ import { existsSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
 
 const windowsChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const useSystemChrome = process.platform === 'win32' && existsSync(windowsChrome);
+const macChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const systemChrome = process.platform === 'win32' ? windowsChrome : macChrome;
+const useSystemChrome = ['win32', 'darwin'].includes(process.platform) && existsSync(systemChrome);
 
 export default defineConfig({
   testDir: './tests',
@@ -16,7 +18,7 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:3000',
     trace: 'retain-on-failure', screenshot: 'only-on-failure', video: 'retain-on-failure',
   },
-  projects: useSystemChrome ? [{ name: 'chrome', use: { ...devices['Desktop Chrome'], launchOptions: { executablePath: windowsChrome } } }] : [
+  projects: useSystemChrome ? [{ name: 'chrome', use: { ...devices['Desktop Chrome'], launchOptions: { executablePath: systemChrome } } }] : [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
