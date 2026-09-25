@@ -1,5 +1,7 @@
-# Export and deletion model
+# Export and deletion behavior
 
-Export requests snapshot only resources that the requesting user owns; shared-but-not-owned records are represented by safe references. A background job produces a private, expiring object and records access. Deletion requests revoke sessions immediately, freeze new processing, remove/re-key owned sensitive data, detach shared references safely, and retain only narrowly required security/legal records with documented policy.
+An authenticated user can request a JSON export. The outbox worker reads account-owned records and stores the result in `data_request.result` in PostgreSQL. A completed export is available through an owner-scoped endpoint until `result_expires_at` (seven days); the worker then clears the JSON and marks the request expired. This is database storage, not S3 object storage. The export includes all sharing rows involving the user, which may include other users' identifiers; narrowing these to safe references requires a further privacy review.
 
-The current schema and request entity exist, but the job processor, user interface, retention schedule, and restore-after-deletion tests are not yet implemented. They are production blockers, not optional polish.
+Deletion has a seven-day grace period. Scheduling it sets `app_user.status` to `pending_deletion`. The session guard then permits only account identity, privacy summary/request review, completed export download, cancellation, and logout. Existing sessions are restricted, and sharing grants involving either pending-deletion account become ineffective during the grace period. Cancellation restores active status and previously valid grants can become effective again. Once the job runs, deleting `app_user` cascades to dependent data and sessions, and a purpose-separated pseudonymous deletion receipt remains. The worker recovers stale export claims and marks exhausted claims failed.
+
+This is not a certified erasure policy. Audit records, backup copies, household references, and legal retention need deployment-specific review. Backup restoration after deletion has not been tested in this audit.

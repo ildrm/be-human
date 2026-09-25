@@ -34,4 +34,27 @@ describe('constraint planner', () => {
     assert.ok(result.conflicts.some((conflict) => conflict.code === 'BUDGET_EXCEEDED'));
     assert.ok(result.conflicts.some((conflict) => conflict.code === 'ACCESSIBILITY_UNMET'));
   });
+  it('moves a flexible item into a free slot before deferring it', () => {
+    const flexible = { id: 'call', title: 'Call', startMinute: 600, durationMinutes: 30, fixed: false, essential: true, category: 'connection' as const, demand: { temporal: 30 } };
+    const result = generatePlan({ ...base, items: [...base.items, flexible] });
+    assert.equal(result.feasible, true);
+    assert.equal(result.deferred.length, 0);
+    assert.notEqual(result.scheduled.find((item) => item.id === 'call')?.startMinute, 600);
+  });
+  it('checks accessibility for scheduled flexible items and defers inaccessible ones', () => {
+    const flexible = { id: 'visit', title: 'Visit', startMinute: 1100, durationMinutes: 30, fixed: false, essential: false, category: 'personal' as const, demand: {}, accessibility: [] };
+    const result = generatePlan({ ...base, accessibilityRequirements: ['step-free'], items: [...base.items.map((item) => item.category === 'sleep' ? item : { ...item, accessibility: ['step-free'] }), flexible] });
+    assert.equal(result.feasible, true);
+    assert.deepEqual(result.deferred.map((item) => item.id), ['visit']);
+  });
+  it('never counts deferred sleep as protected sleep', () => {
+    const flexibleSleep = { id: 'extra-sleep', title: 'Extra sleep', startMinute: 600, durationMinutes: 60, fixed: false, essential: false, category: 'sleep' as const, demand: { temporal: 60 } };
+    const result = generatePlan({ ...base, mode: 'survival', minimumSleepMinutes: 540, items: [...base.items, flexibleSleep] });
+    assert.equal(result.feasible, false);
+    assert.ok(result.conflicts.some((conflict) => conflict.code === 'SLEEP_PROTECTED'));
+  });
+  it('rejects non-finite demand and capacity', () => {
+    assert.throws(() => generatePlan({ ...base, available: { ...capacity, physical: Number.NaN } }), /finite/);
+    assert.throws(() => generatePlan({ ...base, items: [{ ...base.items[0]!, demand: { physical: Number.POSITIVE_INFINITY } }] }), /finite/);
+  });
 });

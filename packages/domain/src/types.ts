@@ -6,6 +6,8 @@ export type CapacityDimension = (typeof CAPACITY_DIMENSIONS)[number];
 export type CapacityVector = Record<CapacityDimension, number>;
 export type Confidence = 'low' | 'medium' | 'high';
 export type OperatingMode = 'stability' | 'growth' | 'recovery' | 'survival';
+export const PLAN_CATEGORIES = ['sleep', 'care', 'work', 'recovery', 'movement', 'personal', 'buffer', 'connection'] as const;
+export type PlanCategory = (typeof PLAN_CATEGORIES)[number];
 
 export type LifeFitDimension = {
   key: string;
@@ -22,7 +24,7 @@ export type PlanItem = {
   durationMinutes: number;
   fixed: boolean;
   essential: boolean;
-  category: 'sleep' | 'care' | 'work' | 'recovery' | 'movement' | 'personal' | 'buffer';
+  category: PlanCategory;
   demand: Partial<CapacityVector>;
   accessibility?: string[] | undefined;
   cost?: number | undefined;

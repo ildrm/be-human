@@ -39,7 +39,15 @@ test('authenticated planning controls open and persist a new item', async ({ pag
   await page.getByLabel('Email').fill('alex@example.test');
   await page.getByLabel('Password').fill('Demo-Only-Change-Me!');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByRole('heading', { name: 'Good morning, Alex.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Good (morning|afternoon|evening), Alex\./ })).toBeVisible();
+  await expect(page.getByText(/Fictional demo data is shown here/)).toBeVisible();
+  await expect(page.getByText('2h 10m estimated debt')).toHaveCount(0);
+  await expect(page.getByText('Move the project review?')).toHaveCount(0);
+  await page.getByLabel('Operating mode').selectOption('survival');
+  await expect(page.getByRole('heading', { name: 'Planning mode: survival' })).toBeVisible();
+  await expect(page.getByText(/This plan has not been checked against your constraints/)).toBeVisible();
+  await expect(page.getByText('Project review', { exact: true })).toBeVisible();
+  await page.getByLabel('Operating mode').selectOption('recovery');
 
   await page.getByRole('button', { name: 'Open week plan' }).click();
   await expect(page.getByRole('heading', { name: 'Your week plan' })).toBeVisible();

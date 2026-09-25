@@ -13,4 +13,4 @@
 
 Consent records are append-only events with policy version, purpose, time, grant/withdrawal status. Optional modules should remain off until the user chooses them. “Prefer not to answer” must not degrade unrelated features.
 
-Exports are owner-scoped and should include provenance and machine-readable data. Deletion is an asynchronous, auditable workflow that first revokes sessions and sharing; statutory/security retention exceptions must be listed to the user. Audit logs contain identifiers and action metadata, not sensitive payloads.
+Exports are authenticated and owner-scoped at the endpoint, but their current sharing section includes rows involving other users. Deletion is asynchronous; sessions are restricted during the grace period and removed when the account is deleted. A jurisdiction-specific retention notice and backup policy remain release gates. Audit logs contain identifiers and action metadata, not direct personal payloads.

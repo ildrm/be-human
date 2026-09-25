@@ -8,3 +8,5 @@
 6. If no verified standard exists, return that fact; do not ask AI to invent one.
 
 Verification dates record review, not an assertion that a source will never change. A scheduled review must revisit both source status and applicability logic.
+
+Current implementation note: this is a target governance method, not an active publishing workflow. `packages/domain/src/standards.ts` is the only runtime registry. `standard_definition` is unused. There are no reviewer identities, approval timestamps, immutable publication events, or scheduled review jobs yet. Population guidance is never applied automatically to an individual Today view.

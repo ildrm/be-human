@@ -11,11 +11,14 @@ export class CredentialsDto {
   @ApiProperty({ minLength: 12, writeOnly: true }) @IsString() @Length(12, 128) password!: string;
 }
 
-export type AuthUser = { id: string; email: string; displayName: string; roles: string[] };
+export type AuthUser = { id: string; email: string; displayName: string; roles: string[]; status: 'active' | 'locked' | 'pending_deletion' };
 type RequestWithUser = FastifyRequest & { user?: AuthUser };
 
 const sessionSecret = (): string => process.env.SESSION_SECRET ?? 'development-only-secret';
-const hashToken = (token: string): string => createHmac('sha256', sessionSecret()).update(token).digest('hex');
+export const hashPurposeToken = (purpose: 'session' | 'csrf' | 'ip', token: string): string =>
+  createHmac('sha256', sessionSecret()).update(`be-human:${purpose}:v1:`).update(token).digest('hex');
+const legacyHash = (token: string): string => createHmac('sha256', sessionSecret()).update(token).digest('hex');
+const sessionHashes = (token: string): string[] => [hashPurposeToken('session', token), legacyHash(token)];
 const equalHash = (left: string, right: string): boolean => {
   const a = Buffer.from(left, 'hex');
   const b = Buffer.from(right, 'hex');
@@ -31,7 +34,7 @@ export class AuthService {
     const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 19_456, timeCost: 3, parallelism: 1 });
     try {
       const result = await this.db.query<AuthUser & { roles: string[] }>(
-        `INSERT INTO app_user(email, password_hash, display_name) VALUES (lower($1), $2, split_part($1, '@', 1)) RETURNING id, email, display_name AS "displayName", ARRAY['user']::text[] AS roles`,
+        `INSERT INTO app_user(email, password_hash, display_name) VALUES (lower($1), $2, split_part($1, '@', 1)) RETURNING id, email, display_name AS "displayName", ARRAY['user']::text[] AS roles, status`,
         [input.email, passwordHash],
       );
       return result.rows[0]!;
@@ -43,7 +46,7 @@ export class AuthService {
 
   async authenticate(input: CredentialsDto): Promise<AuthUser> {
     const result = await this.db.query<AuthUser & { passwordHash: string }>(
-      `SELECT u.id, u.email, u.display_name AS "displayName", u.password_hash AS "passwordHash", COALESCE(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), ARRAY['user']::text[]) AS roles FROM app_user u LEFT JOIN user_role r ON r.user_id=u.id WHERE u.email=lower($1) AND u.status <> 'locked' GROUP BY u.id`, [input.email],
+      `SELECT u.id, u.email, u.display_name AS "displayName", u.password_hash AS "passwordHash", u.status, COALESCE(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), ARRAY['user']::text[]) AS roles FROM app_user u LEFT JOIN user_role r ON r.user_id=u.id WHERE u.email=lower($1) AND u.status <> 'locked' GROUP BY u.id`, [input.email],
     );
     const record = result.rows[0];
     const verified = await argon2.verify(record?.passwordHash ?? await this.dummyHash, input.password);
@@ -55,22 +58,31 @@ export class AuthService {
   async createSession(userId: string, metadata: { userAgent?: string; ip?: string }): Promise<{ token: string; csrfToken: string }> {
     const token = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(24).toString('base64url');
-    await this.db.query(`INSERT INTO user_session(user_id, token_hash, csrf_hash, expires_at, user_agent, ip_hash) VALUES ($1, $2, $3, now() + interval '30 days', $4, $5)`, [userId, hashToken(token), hashToken(csrfToken), metadata.userAgent?.slice(0, 300) ?? null, metadata.ip ? hashToken(metadata.ip) : null]);
+    await this.db.query(`INSERT INTO user_session(user_id, token_hash, csrf_hash, expires_at, user_agent, ip_hash) VALUES ($1, $2, $3, now() + interval '30 days', $4, $5)`, [userId, hashPurposeToken('session', token), hashPurposeToken('csrf', csrfToken), metadata.userAgent?.slice(0, 300) ?? null, metadata.ip ? hashPurposeToken('ip', metadata.ip) : null]);
     return { token, csrfToken };
   }
 
   async resolveSession(token: string): Promise<AuthUser | null> {
-    const result = await this.db.query<AuthUser>(`SELECT u.id, u.email, u.display_name AS "displayName", COALESCE(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), ARRAY['user']::text[]) AS roles FROM user_session s JOIN app_user u ON u.id=s.user_id LEFT JOIN user_role r ON r.user_id=u.id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'locked' GROUP BY u.id`, [hashToken(token)]);
-    return result.rows[0] ?? null;
+    const result = await this.db.query<AuthUser>(`SELECT u.id, u.email, u.display_name AS "displayName", u.status, COALESCE(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), ARRAY['user']::text[]) AS roles FROM user_session s JOIN app_user u ON u.id=s.user_id LEFT JOIN user_role r ON r.user_id=u.id WHERE s.token_hash=ANY($1::text[]) AND s.revoked_at IS NULL AND s.expires_at > now() AND u.status <> 'locked' GROUP BY u.id`, [sessionHashes(token)]);
+    const user = result.rows[0] ?? null;
+    if (user) await this.db.query(`UPDATE user_session SET last_seen_at=now() WHERE token_hash=ANY($1::text[]) AND last_seen_at < now()-interval '15 minutes'`, [sessionHashes(token)]);
+    return user;
   }
 
-  async revoke(token: string): Promise<void> { await this.db.query(`UPDATE user_session SET revoked_at=now() WHERE token_hash=$1`, [hashToken(token)]); }
+  async revoke(token: string): Promise<void> { await this.db.query(`UPDATE user_session SET revoked_at=now() WHERE token_hash=ANY($1::text[])`, [sessionHashes(token)]); }
 
   async verifyCsrf(token: string, csrfToken: string): Promise<boolean> {
-    const result = await this.db.query<{ csrfHash: string }>(`SELECT csrf_hash AS "csrfHash" FROM user_session WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at > now()`, [hashToken(token)]);
+    const result = await this.db.query<{ csrfHash: string }>(`SELECT csrf_hash AS "csrfHash" FROM user_session WHERE token_hash=ANY($1::text[]) AND revoked_at IS NULL AND expires_at > now()`, [sessionHashes(token)]);
     const stored = result.rows[0]?.csrfHash;
-    return Boolean(stored && equalHash(stored, hashToken(csrfToken)));
+    return Boolean(stored && (equalHash(stored, hashPurposeToken('csrf', csrfToken)) || equalHash(stored, legacyHash(csrfToken))));
   }
+}
+
+export function canAccessWhilePending(method: string, url: string): boolean {
+  const path = url.split('?')[0];
+  if (method === 'GET') return path === '/api/v1/auth/me' || path === '/api/v1/privacy/summary' || path === '/api/v1/privacy/requests' || /^\/api\/v1\/privacy\/exports\/[0-9a-f-]{36}$/i.test(path ?? '');
+  if (method === 'POST') return path === '/api/v1/auth/logout';
+  return method === 'DELETE' && /^\/api\/v1\/privacy\/requests\/[0-9a-f-]{36}$/i.test(path ?? '');
 }
 
 @Injectable()
@@ -82,6 +94,9 @@ export class SessionGuard implements CanActivate {
     if (!token) throw new UnauthorizedException('Sign in is required.');
     const user = await this.auth.resolveSession(token);
     if (!user) throw new UnauthorizedException('Your session is invalid or expired.');
+    if (user.status === 'pending_deletion' && !canAccessWhilePending(request.method, request.url)) {
+      throw new ForbiddenException('Only privacy review and deletion cancellation are available while account deletion is pending.');
+    }
     request.user = user;
     return true;
   }

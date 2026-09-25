@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
+export function requestIdFromHeader(supplied: unknown): string {
+  return typeof supplied === 'string' && /^[a-zA-Z0-9._-]{1,80}$/.test(supplied) ? supplied : randomUUID();
+}
+
 export async function requestContext(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const supplied = request.headers['x-request-id'];
-  const requestId = typeof supplied === 'string' && /^[a-zA-Z0-9._-]{1,80}$/.test(supplied) ? supplied : randomUUID();
-  reply.header('x-request-id', requestId);
+  reply.header('x-request-id', request.id);
+  reply.header('cache-control', 'no-store');
 }

@@ -7,9 +7,20 @@ import { CsrfGuard, SessionGuard, currentUser } from './auth.js';
 import { DbService } from './db.service.js';
 
 const memberRoles = ['member', 'guardian', 'dependent', 'administrator'] as const;
-const shareableResources = ['calendar', 'goal', 'plan', 'life_event'] as const;
-const permissions = ['view', 'edit', 'coordinate'] as const;
-const tokenHash = (token: string) => createHmac('sha256', process.env.SESSION_SECRET ?? 'development-only-secret').update(token).digest('hex');
+const shareableResources = ['goal'] as const;
+const permissions = ['view'] as const;
+const tokenHash = (token: string) => createHmac('sha256', process.env.SESSION_SECRET ?? 'development-only-secret').update('be-human:invitation:v1:').update(token).digest('hex');
+const legacyTokenHash = (token: string) => createHmac('sha256', process.env.SESSION_SECRET ?? 'development-only-secret').update(token).digest('hex');
+export const effectiveSharingCondition = `s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at > now()) AND EXISTS (
+  SELECT 1 FROM app_user grant_owner JOIN app_user grant_grantee ON grant_grantee.id=s.grantee_user_id
+  WHERE grant_owner.id=s.owner_user_id AND grant_owner.status='active' AND grant_grantee.status='active'
+) AND EXISTS (
+  SELECT 1 FROM household_member owner JOIN household_member grantee ON grantee.household_id=owner.household_id
+  WHERE owner.household_id=s.household_id AND owner.user_id=s.owner_user_id AND grantee.user_id=s.grantee_user_id
+    AND owner.valid_to IS NULL AND grantee.valid_to IS NULL
+    AND owner.valid_from<=s.created_at AND grantee.valid_from<=s.created_at
+    AND owner.valid_from<=now() AND grantee.valid_from<=now()
+)`;
 
 class HouseholdIdDto { @IsUUID() householdId!: string; }
 class ShareIdDto { @IsUUID() id!: string; }
@@ -32,7 +43,7 @@ export class ResourcePolicyService {
   async canAccess(ownerUserId: string, actorUserId: string, resourceType: string, required: 'view' | 'edit' | 'coordinate' = 'view'): Promise<boolean> {
     if (ownerUserId === actorUserId) return true;
     const accepted = required === 'view' ? ['view', 'edit', 'coordinate'] : required === 'edit' ? ['edit', 'coordinate'] : ['coordinate'];
-    const result = await this.db.query(`SELECT 1 FROM sharing_permission WHERE owner_user_id=$1 AND grantee_user_id=$2 AND resource_type=$3 AND permission=ANY($4::text[]) AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`, [ownerUserId, actorUserId, resourceType, accepted]);
+    const result = await this.db.query(`SELECT 1 FROM sharing_permission s WHERE s.owner_user_id=$1 AND s.grantee_user_id=$2 AND s.resource_type=$3 AND s.permission=ANY($4::text[]) AND ${effectiveSharingCondition}`, [ownerUserId, actorUserId, resourceType, accepted]);
     return Boolean(result.rowCount);
   }
 }
@@ -76,10 +87,10 @@ export class HouseholdsController {
     return { data: { invitationId: result.rows[0]!.id, token, expiresAt: result.rows[0]!.expiresAt } };
   }
 
-  @Post('invitations/:token/accept') @UseGuards(CsrfGuard) async accept(@Param() params: InviteTokenDto, @Req() request: FastifyRequest) {
+  @Post('invitations/accept') @UseGuards(CsrfGuard) async accept(@Body() input: InviteTokenDto, @Req() request: FastifyRequest) {
     const user = currentUser(request);
     const data = await this.db.transaction(async (client) => {
-      const invitation = await client.query<{ id: string; householdId: string; role: string; invitedEmail: string | null }>(`SELECT id,household_id AS "householdId",role,invited_email AS "invitedEmail" FROM household_invitation WHERE token_hash=$1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now() FOR UPDATE`, [tokenHash(params.token)]);
+      const invitation = await client.query<{ id: string; householdId: string; role: string; invitedEmail: string | null }>(`SELECT id,household_id AS "householdId",role,invited_email AS "invitedEmail" FROM household_invitation WHERE token_hash=ANY($1::text[]) AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now() FOR UPDATE`, [[tokenHash(input.token), legacyTokenHash(input.token)]]);
       const item = invitation.rows[0];
       if (!item || (item.invitedEmail && item.invitedEmail !== user.email.toLowerCase())) throw new NotFoundException('Invitation is invalid or expired.');
       await client.query(`INSERT INTO household_member(household_id,user_id,role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [item.householdId, user.id, item.role]);
@@ -92,17 +103,17 @@ export class HouseholdsController {
 
   @Get('sharing') async shares(@Req() request: FastifyRequest) {
     const userId = currentUser(request).id;
-    const result = await this.db.query(`SELECT s.id,s.owner_user_id AS "ownerUserId",s.grantee_user_id AS "granteeUserId",u.display_name AS "granteeName",s.resource_type AS "resourceType",s.permission,s.expires_at AS "expiresAt",s.created_at AS "createdAt" FROM sharing_permission s JOIN app_user u ON u.id=s.grantee_user_id WHERE s.owner_user_id=$1 AND s.revoked_at IS NULL ORDER BY s.created_at DESC`, [userId]);
+    const result = await this.db.query(`SELECT s.id,s.household_id AS "householdId",s.owner_user_id AS "ownerUserId",s.grantee_user_id AS "granteeUserId",u.display_name AS "granteeName",s.resource_type AS "resourceType",s.permission,s.expires_at AS "expiresAt",s.created_at AS "createdAt" FROM sharing_permission s JOIN app_user u ON u.id=s.grantee_user_id WHERE s.owner_user_id=$1 AND ${effectiveSharingCondition} ORDER BY s.created_at DESC`, [userId]);
     return { data: result.rows };
   }
 
   @Post(':householdId/sharing') @UseGuards(CsrfGuard) async share(@Param() params: HouseholdIdDto, @Body() input: ShareDto, @Req() request: FastifyRequest) {
     const userId = currentUser(request).id;
     if (input.granteeUserId === userId) throw new ConflictException('You already own this data.');
-    const sameHousehold = await this.db.query(`SELECT 1 FROM household_member owner JOIN household_member grantee ON grantee.household_id=owner.household_id WHERE owner.household_id=$1 AND owner.user_id=$2 AND grantee.user_id=$3 AND owner.valid_to IS NULL AND grantee.valid_to IS NULL`, [params.householdId, userId, input.granteeUserId]);
+    const sameHousehold = await this.db.query(`SELECT 1 FROM household_member owner JOIN household_member grantee ON grantee.household_id=owner.household_id JOIN app_user grantee_user ON grantee_user.id=grantee.user_id WHERE owner.household_id=$1 AND owner.user_id=$2 AND grantee.user_id=$3 AND owner.valid_to IS NULL AND grantee.valid_to IS NULL AND grantee_user.status='active'`, [params.householdId, userId, input.granteeUserId]);
     if (!sameHousehold.rowCount) throw new NotFoundException('Household member not found.');
     try {
-      const result = await this.db.query(`INSERT INTO sharing_permission(owner_user_id,grantee_user_id,resource_type,permission,expires_at) VALUES ($1,$2,$3,$4,$5) RETURNING id,resource_type AS "resourceType",permission,expires_at AS "expiresAt"`, [userId, input.granteeUserId, input.resourceType, input.permission, input.expiresAt ?? null]);
+      const result = await this.db.query(`INSERT INTO sharing_permission(household_id,owner_user_id,grantee_user_id,resource_type,permission,expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,household_id AS "householdId",resource_type AS "resourceType",permission,expires_at AS "expiresAt"`, [params.householdId, userId, input.granteeUserId, input.resourceType, input.permission, input.expiresAt ?? null]);
       await this.db.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,metadata,request_id) VALUES ($1,'grant','sharing_permission',$2,$3,$4)`, [userId, result.rows[0]!.id, JSON.stringify({ resourceType: input.resourceType, permission: input.permission }), request.id]);
       return { data: result.rows[0] };
     } catch (error) {

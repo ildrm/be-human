@@ -10,6 +10,7 @@ type SessionData = { me: Me; today: TodayData };
 export function AuthenticatedToday() {
   const [session, setSession] = useState<SessionData | null>();
   useEffect(() => {
+    window.localStorage.removeItem('be-human:onboarding-draft:v1');
     Promise.all([api<Me>('auth/me'), api<{ data: TodayData }>('today')])
       .then(([me, today]) => setSession({ me, today: today.data }))
       .catch(() => setSession(null));

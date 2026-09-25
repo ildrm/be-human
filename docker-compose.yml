@@ -67,6 +67,7 @@ services:
       context: .
       dockerfile: Dockerfile.migrate
     command: ["pnpm", "db:seed"]
+    profiles: ["demo"]
     environment:
       DATABASE_URL: postgresql://be_human:${POSTGRES_PASSWORD:-be_human_dev}@postgres:5432/be_human
     depends_on:
@@ -91,7 +92,7 @@ services:
     ports:
       - "${API_PORT:-3001}:3001"
     depends_on:
-      seed:
+      migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
@@ -107,7 +108,7 @@ services:
       DATABASE_URL: postgresql://be_human:${POSTGRES_PASSWORD:-be_human_dev}@postgres:5432/be_human
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set}
     depends_on:
-      seed:
+      migrate:
         condition: service_completed_successfully
     restart: unless-stopped
 

@@ -12,7 +12,7 @@ Testing follows the highest-risk boundaries: deterministic calculations, safety 
 - Scientific-governance tests cover provenance completeness, age exclusion, and professional-override precedence.
 - API tests cover evidence and planner contracts, keyed session/CSRF handling, owner-scoped writes, and explicit-grant household authorization. PostgreSQL integration tests run whenever `DATABASE_URL` is present and are mandatory in CI.
 - Playwright runs public, authentication, anonymous-data-isolation, keyboard, mobile, and axe checks. CI executes them in Chromium, Firefox, WebKit, and a mobile Chromium profile.
-- The HTTP smoke journey exercises readiness, registration, CSRF rejection, owned goal persistence, household creation, worker-produced export, logout, and session revocation against the complete stack.
+- The HTTP smoke journey exercises readiness, registration, CSRF rejection, owned goal persistence, household invitation and explicit goal sharing, worker-produced export, suspension and restoration of sharing during pending deletion, logout, and session revocation against the complete stack.
 - CI also performs lint, type checks, production builds, frozen-lockfile provenance verification, dependency audit, Compose builds, SBOM generation, and repository/API/web image scans.
 
 Tests must not be skipped to obtain green status. Environmental failures are reported separately from product failures.

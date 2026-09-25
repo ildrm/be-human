@@ -8,9 +8,9 @@ try {
   await pool.query(`INSERT INTO user_role(user_id,role) VALUES ($1,'user') ON CONFLICT DO NOTHING`, [user.rows[0]!.id]);
   await pool.query(`INSERT INTO profile(user_id,life_stage,worldview,accessibility_needs) VALUES ($1,'adult','prefer_not_to_say','[]') ON CONFLICT (user_id) DO NOTHING`, [user.rows[0]!.id]);
   const plan = await pool.query<{ id: string }>(`INSERT INTO plan(user_id,plan_date,timezone,operating_mode,feasible,model_version,explanation)
-    VALUES ($1,(now() AT TIME ZONE 'Asia/Tehran')::date,'Asia/Tehran','recovery',true,'demo-v1',$2)
-    ON CONFLICT (user_id,plan_date,model_version) DO UPDATE SET operating_mode=EXCLUDED.operating_mode,explanation=EXCLUDED.explanation,created_at=now()
-    RETURNING id`, [user.rows[0]!.id, JSON.stringify({ summary: 'A quieter plan for a lower-capacity day.', bufferMinutes: 75, source: 'fictional-demo' })]);
+    VALUES ($1,(now() AT TIME ZONE 'Asia/Tehran')::date,'Asia/Tehran','recovery',NULL,'demo-v1',$2)
+    ON CONFLICT (user_id,plan_date,model_version) DO UPDATE SET operating_mode=EXCLUDED.operating_mode,feasible=NULL,explanation=EXCLUDED.explanation,created_at=now()
+    RETURNING id`, [user.rows[0]!.id, JSON.stringify({ summary: 'A quieter plan for a lower-capacity day.', bufferMinutes: 50, source: 'fictional-demo', constraintCheck: 'not_assessed' })]);
   await pool.query('DELETE FROM plan_item WHERE plan_id=$1', [plan.rows[0]!.id]);
   const planItems = [
     ['08:30', 35, 'Gentle start', 'Breakfast · medication · no rush', 'recovery', true, true, 'completed'],
@@ -27,7 +27,7 @@ try {
       FROM plan p WHERE p.id=$1`, [plan.rows[0]!.id, title, time, duration, fixed, essential, JSON.stringify({ detail, category, source: 'fictional-demo' }), status]);
   }
   await pool.query(`DELETE FROM capacity_snapshot WHERE user_id=$1`, [user.rows[0]!.id]);
-  await pool.query(`INSERT INTO capacity_snapshot(user_id,observed_at,timezone,capacity,confidence,source) VALUES ($1,now(),'Asia/Tehran',$2,$3,'fictional-demo')`, [user.rows[0]!.id, JSON.stringify({ physical: 48, cognitive: 56, emotional: 42, executive: 51 }), JSON.stringify({ level: 'medium', basis: 'fictional-demo' })]);
+  await pool.query(`INSERT INTO capacity_snapshot(user_id,observed_at,timezone,capacity,confidence,source) VALUES ($1,now(),'Asia/Tehran',$2,$3,'fictional-demo')`, [user.rows[0]!.id, JSON.stringify({ physical: 48, cognitive: 56, emotional: 42, executive: 51 }), JSON.stringify({ level: 'unknown', basis: 'fictional-demo' })]);
   const scenarios = [
     ['single-office-worker','Single office worker'], ['married-parent','Married parent'], ['single-parent','Single parent'],
     ['rotating-shift-worker','Rotating-shift worker'], ['remote-employee','Remote employee'], ['long-commute-user','Long-commute user'],

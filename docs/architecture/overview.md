@@ -1,26 +1,21 @@
 # Architecture overview
 
-Be Human starts as a modular monolith plus independently deployable web and worker boundaries. This keeps policy and transactions coherent while leaving seams for later extraction.
+Be Human is a pnpm monorepo with a Next.js web app, NestJS/Fastify API, shared TypeScript domain package, PostgreSQL database, and separate outbox worker.
 
 ```mermaid
 flowchart LR
-  B[Browser] -->|HTTPS + HttpOnly session| W[Next.js web]
-  B -->|Versioned JSON API| A[NestJS / Fastify API]
-  W --> A
-  A --> P[(PostgreSQL)]
-  A --> R[(Redis)]
-  A --> O[(S3-compatible private objects)]
-  R --> J[Background workers]
-  J --> P
-  A --> E[Evidence registry]
-  E --> C[Pure calculations]
-  C --> L[Constraint planner]
+  Browser --> Web[Next.js and same-origin API gateway]
+  Web --> API[NestJS / Fastify]
+  API --> DB[(PostgreSQL)]
+  Worker[Outbox worker] --> DB
+  API --> Domain[Pure calculations and planner]
+  Domain --> Registry[TypeScript evidence metadata]
 ```
 
-The browser never decides authorization. The API resolves identity, relationship context, resource ownership, granular sharing, professional restrictions, standards applicability, and evidence provenance. Pure packages contain deterministic calculations and planning so they can be tested without framework or database state.
+The browser holds an HttpOnly session cookie and a readable CSRF cookie. The API resolves identity, checks ownership and supported goal-view grants tied to a specific household, validates requests, and writes to PostgreSQL. The worker claims jobs from PostgreSQL with `SKIP LOCKED`. Redis and MinIO are provisioned but have no application path. The SQL evidence table and recommendation table have no publishing or consumption workflow.
 
-Absolute events are stored as `timestamptz`; user and event time zones are stored separately. Historical context, standards, and calculated output are versioned rather than overwritten.
+Plan items are stored as `timestamptz`; the plan and user retain an IANA timezone. Today selects the user's local date. The generator takes minute offsets and caller-supplied eight-dimensional planning units. Manual plans and plans changed after generation have nullable, unknown feasibility until regenerated. The four-value Today check-in is separate and is not a validated measurement or automatic planner input.
 
 ## Trust boundaries
 
-Browser input, uploads, connected calendars, retrieved documents, AI output, and environmental providers are untrusted. The database is sensitive. AI is permitted to explain or summarize only vetted results; it cannot create evidence records, override a hard constraint, or authorize a resource.
+API input and browser state are untrusted. Authentication and authorization are server decisions. Household membership is necessary but insufficient for viewing another person's goals: a current, explicit grant is also required. Manual plan mutations have not been re-evaluated by the generator. No AI system or external integration is in the runtime path.

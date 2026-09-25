@@ -8,7 +8,7 @@ const workerId = `${process.env.HOSTNAME ?? 'local'}:${process.pid}:${randomUUID
 let stopping = false;
 
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const subjectHash = (userId: string) => createHmac('sha256', process.env.SESSION_SECRET ?? 'development-only-secret').update(userId).digest('hex');
+const subjectHash = (userId: string) => createHmac('sha256', process.env.SESSION_SECRET ?? 'development-only-secret').update('deletion-receipt:').update(userId).digest('hex');
 
 async function claim(): Promise<Job | null> {
   const client = await pool.connect();
@@ -30,9 +30,6 @@ async function claim(): Promise<Job | null> {
 
 async function exportUserData(job: Job): Promise<void> {
   const { requestId, userId } = job.payload;
-  const request = await pool.query(`SELECT 1 FROM data_request WHERE id=$1 AND user_id=$2 AND status='pending' AND cancelled_at IS NULL`, [requestId, userId]);
-  if (!request.rowCount) return;
-  await pool.query(`UPDATE data_request SET status='processing' WHERE id=$1`, [requestId]);
   const tables = [
     ['account', `SELECT id,email,display_name,locale,timezone,status,created_at FROM app_user WHERE id=$1`],
     ['profile', `SELECT * FROM profile WHERE user_id=$1`],
@@ -43,11 +40,23 @@ async function exportUserData(job: Job): Promise<void> {
     ['capacity', `SELECT * FROM capacity_snapshot WHERE user_id=$1 ORDER BY observed_at`],
     ['metrics', `SELECT * FROM metric_observation WHERE user_id=$1 ORDER BY observed_at`],
     ['assessments', `SELECT * FROM wellbeing_assessment WHERE user_id=$1 ORDER BY administered_at`],
-    ['sharing', `SELECT * FROM sharing_permission WHERE owner_user_id=$1 OR grantee_user_id=$1 ORDER BY created_at`],
+    ['sharingGiven', `SELECT id,household_id,grantee_user_id,resource_type,permission,expires_at,revoked_at,created_at FROM sharing_permission WHERE owner_user_id=$1 ORDER BY created_at`],
+    ['sharingReceived', `SELECT id,household_id,owner_user_id,resource_type,permission,expires_at,revoked_at,created_at FROM sharing_permission WHERE grantee_user_id=$1 ORDER BY created_at`],
   ] as const;
-  const exportData: Record<string, unknown> = { schemaVersion: 1, generatedAt: new Date().toISOString() };
-  for (const [key, sql] of tables) exportData[key] = (await pool.query(sql, [userId])).rows;
-  await pool.query(`UPDATE data_request SET status='completed',completed_at=now(),result=$2,result_expires_at=now()+interval '7 days' WHERE id=$1`, [requestId, JSON.stringify(exportData)]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    const request = await client.query(`SELECT 1 FROM data_request WHERE id=$1 AND user_id=$2 AND status='pending' AND cancelled_at IS NULL FOR UPDATE`, [requestId, userId]);
+    if (!request.rowCount) { await client.query('COMMIT'); return; }
+    await client.query(`UPDATE data_request SET status='processing' WHERE id=$1`, [requestId]);
+    const exportData: Record<string, unknown> = { schemaVersion: 2, generatedAt: new Date().toISOString() };
+    for (const [key, sql] of tables) exportData[key] = (await client.query(sql, [userId])).rows;
+    await client.query(`UPDATE data_request SET status='completed',completed_at=now(),result=$2,result_expires_at=now()+interval '7 days' WHERE id=$1`, [requestId, JSON.stringify(exportData)]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 async function deleteUserData(job: Job): Promise<void> {
@@ -74,14 +83,21 @@ async function complete(job: Job): Promise<void> {
 async function fail(job: Job, error: unknown): Promise<void> {
   const dead = job.attempts >= job.maxAttempts;
   const delaySeconds = Math.min(3600, 2 ** job.attempts * 5);
-  await pool.query(`UPDATE job_outbox SET status=$2,last_error=$3,available_at=now()+($4*interval '1 second'),locked_at=NULL,locked_by=NULL WHERE id=$1`, [job.id, dead ? 'dead' : 'failed', String(error).slice(0, 1_000), delaySeconds]);
+  await pool.query(`UPDATE job_outbox SET status=$2,last_error=$3,available_at=now()+($4*interval '1 second'),locked_at=NULL,locked_by=NULL WHERE id=$1`, [job.id, dead ? 'dead' : 'failed', error instanceof Error ? error.name : 'UnknownError', delaySeconds]);
   await pool.query(`UPDATE data_request SET status=$2,error_code=$3 WHERE id=$1`, [job.payload.requestId, dead ? 'failed' : 'pending', dead ? 'PROCESSING_FAILED' : null]);
 }
 
 async function run(): Promise<void> {
-  await pool.query(`UPDATE job_outbox SET status='failed',locked_at=NULL,locked_by=NULL,available_at=now() WHERE status='processing' AND locked_at < now()-interval '15 minutes'`);
+  await pool.query(`WITH stale AS (
+    UPDATE job_outbox SET status=CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'failed' END,locked_at=NULL,locked_by=NULL,available_at=now()
+    WHERE status='processing' AND locked_at < now()-interval '15 minutes'
+    RETURNING job_type,payload,status
+  ) UPDATE data_request d SET status=CASE WHEN stale.status='dead' THEN 'failed' ELSE 'pending' END,
+      error_code=CASE WHEN stale.status='dead' THEN 'PROCESSING_FAILED' ELSE NULL END
+    FROM stale WHERE d.request_type='export' AND d.status='processing'
+      AND stale.job_type='privacy.export' AND d.id=(stale.payload->>'requestId')::uuid`);
   while (!stopping) {
-    await pool.query(`UPDATE data_request SET result=NULL WHERE request_type='export' AND result_expires_at <= now() AND result IS NOT NULL`);
+    await pool.query(`UPDATE data_request SET result=NULL,status='expired' WHERE request_type='export' AND result_expires_at <= now() AND result IS NOT NULL`);
     const job = await claim();
     if (!job) { await pause(2_000); continue; }
     try {

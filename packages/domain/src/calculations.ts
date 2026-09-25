@@ -22,12 +22,15 @@ export function mifflinStJeor(input: { weightKg: number; heightCm: number; ageYe
   nonNegative(input.heightCm, 'heightCm');
   nonNegative(input.ageYears, 'ageYears');
   if (input.ageYears < 18) throw new RangeError('adult equation is not applicable below age 18');
+  if (input.constant !== -161 && input.constant !== 5) throw new RangeError('constant must be -161 or 5');
   return 10 * input.weightKg + 6.25 * input.heightCm - 5 * input.ageYears + input.constant;
 }
 
 export const gramsFromEnergyFraction = (energyKcal: number, fraction: number, kcalPerGram: 4 | 9): number => {
   nonNegative(energyKcal, 'energyKcal');
+  finite(fraction, 'fraction');
   if (fraction < 0 || fraction > 1) throw new RangeError('fraction must be between 0 and 1');
+  if (kcalPerGram !== 4 && kcalPerGram !== 9) throw new RangeError('kcalPerGram must be 4 or 9');
   return (energyKcal * fraction) / kcalPerGram;
 };
 
@@ -85,6 +88,7 @@ export const robustZScore = (value: number, median: number, medianAbsoluteDeviat
 };
 
 export const ewma = (observations: readonly number[], alpha: number): number | null => {
+  finite(alpha, 'alpha');
   if (alpha <= 0 || alpha > 1) throw new RangeError('alpha must be in (0, 1]');
   if (observations.length === 0) return null;
   return observations.slice(1).reduce((current, value) => alpha * finite(value, 'observation') + (1 - alpha) * current, finite(observations[0]!, 'observation'));

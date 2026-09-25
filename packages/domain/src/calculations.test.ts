@@ -39,6 +39,11 @@ describe('scientific and descriptive calculation golden cases', () => {
     assert.equal(demandCapacityRatio(8, 10), 0.8);
     assert.equal(demandCapacityRatio(1, 0), Number.POSITIVE_INFINITY);
   });
+  it('rejects non-finite parameters that ordinary comparisons miss', () => {
+    assert.throws(() => gramsFromEnergyFraction(2000, Number.NaN, 4), /finite/);
+    assert.throws(() => ewma([1, 2], Number.NaN), /finite/);
+    assert.throws(() => mifflinStJeor({ weightKg: 70, heightCm: 170, ageYears: 30, constant: Number.NaN as 5 }), /constant/);
+  });
 });
 
 describe('calculation invariants', () => {

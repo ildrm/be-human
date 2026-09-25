@@ -1,37 +1,30 @@
-# Be Human — a life-fit operating system
+# Be Human
 
-Be Human is an evidence-governed planning application that fits plans to a person's actual capacity, commitments, accessibility needs, resources, and values. It does not compute a universal “life score.” Its primary output is a multidimensional Life Fit view and an explainable, editable plan.
+Be Human is a life-planning application built around constraints, user choice, and uncertainty. It does not compute a universal life score or offer medical, legal, or financial advice.
 
-This repository contains a deployable product slice: a Next.js 16 web app, NestJS 11 API, PostgreSQL database, durable background worker, versioned evidence registry, deterministic constraint planner, authentication and authorization, explicit household sharing, privacy workflows, and hardened multi-stage containers.
+This repository contains a Next.js web app, NestJS/Fastify API, PostgreSQL migrations, an outbox worker, and a deterministic domain package. The current web app supports manual plan items, goals, self-rated capacity check-ins, privacy requests, and household membership. The Life Fit map stays unknown until a real assessment exists. The standalone planner API can search alternate slots for flexible items under recorded constraints; the web app does not yet regenerate manual plans.
 
-## Run with Docker
+## Run locally
 
-Prerequisite: Docker Desktop or Docker Engine with Compose.
-
-1. Copy `.env.example` to `.env`.
-2. Set `SESSION_SECRET` to at least 32 random characters and replace the database/object-storage development credentials before any public deployment.
-3. Start the stack:
+Requires Node 24+, pnpm 11+, and PostgreSQL 17+, or Docker Compose. Copy `.env.example` to `.env` and set a unique `SESSION_SECRET` of at least 32 characters.
 
 ```bash
 docker compose up --build
 ```
 
-Open `http://localhost:3000`. Health and readiness are available at `http://localhost:3001/health` and `http://localhost:3001/ready`. OpenAPI is disabled in production by default; set `ENABLE_API_DOCS=true` only where exposing `http://localhost:3001/docs` is appropriate.
+Open `http://localhost:3000`. `http://localhost:3001/health` and `/ready` expose health and database readiness. API docs are disabled in the production container unless `ENABLE_API_DOCS=true`.
 
-Migrations and the idempotent fictional seed run before the API becomes healthy. Demo sign-in: `alex@example.test` / `Demo-Only-Change-Me!`.
+The default stack runs migrations and creates **no demo account**. For an explicitly fictional local demo, run `docker compose --profile demo up --build`; the demo login is `alex@example.test` / `Demo-Only-Change-Me!`. Never use that profile on a public deployment. MinIO and Mailpit have separate `storage` and `development` profiles and are not required by the application.
 
-## Local development
-
-Node 24 LTS+, pnpm 11+, and PostgreSQL 17+ are expected.
+For host-side development, point `DATABASE_URL` at localhost and run:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm db:migrate
-pnpm db:seed
 pnpm dev
 ```
 
-For host-side development, point `DATABASE_URL` at `localhost` rather than the Compose service name `postgres`. Never reuse the demo credentials or local secrets in a deployed environment.
+Run `pnpm db:seed` only when you explicitly want fictional data.
 
 ## Verification
 
@@ -41,34 +34,16 @@ pnpm test:e2e
 pnpm test:smoke
 pnpm audit --audit-level high
 docker compose config --quiet
-docker compose up -d --build
 ```
 
-The automated coverage includes 36 domain and scenario checks, API unit and PostgreSQL integration coverage, six browser journeys with automated accessibility checks, and an end-to-end HTTP smoke journey covering registration, CSRF enforcement, owned data, household creation, asynchronous export, logout, and session revocation. See `docs/testing/strategy.md` and `docs/implementation-status.md`.
+PostgreSQL integration tests run when `DATABASE_URL` is set; CI supplies it. Browser tests require installed Playwright engines and a database with the demo seed. The [verification report](docs/verification-report.md) records what actually ran in this workspace.
 
-## Architecture
+## Current boundaries
 
-The system is a modular monolith with separate web, API, and worker processes. The browser talks to a same-origin Next.js gateway, which keeps API topology and session cookies out of client configuration. The API owns policy, evidence applicability, authentication, authorization, recommendations, and persistence. PostgreSQL is the source of truth and also backs a transactional outbox; the worker claims jobs with `SKIP LOCKED`, retries with backoff, and records terminal failures. Redis is provisioned for future high-throughput coordination but is not the authoritative job store.
+- Manual plan edits and mode-label changes do not re-run hard-constraint checks. They mark feasibility unknown in Today. Recovery and Survival affect the standalone generator only.
+- The four Today capacity values are optional 0–100 self-ratings. They do not automatically populate the generator's eight-dimensional demand/capacity input.
+- Goal viewing is the only implemented shared-resource read. Household membership alone never grants it; an explicit grant bound to that household and current membership are required. Migration 004 suspends legacy grants whose source household is ambiguous.
+- Exports are expiring JSON held in PostgreSQL, not private S3 objects. The deletion grace period restricts sessions; account removal then removes dependent rows.
+- The TypeScript evidence registry is the only runtime evidence source. The SQL evidence and recommendation tables do not provide a review or recommendation workflow.
 
-## Security and privacy
-
-Sessions use opaque random tokens, keyed HMAC hashes at rest, secure/HTTP-only cookie controls, a separate CSRF cookie and header, expiry/revocation, global rate limiting, schema validation, log redaction, and production secret validation. Household membership never grants resource visibility: sharing is an explicit per-resource permission evaluated server-side. Exports expire after seven days; deletion uses a seven-day cancellation window and emits an audit receipt.
-
-Terminate TLS at a trusted ingress, set `COOKIE_SECURE=true`, configure the exact `WEB_ORIGIN`, use managed encrypted stores, rotate secrets, and run backup/restore drills. See `docs/security/threat-model.md` and `docs/privacy/data-classification.md`.
-
-## Safety and evidence limits
-
-Be Human is planning software, not emergency, diagnostic, medical, legal, or financial advice. Population guidance never overrides a recorded professional restriction. Estimates are labelled, inputs carry confidence, and recommendations cite versioned sources. Licensed screeners are adapters only and are not bundled. Scientific, legal, accessibility, and security specialists must approve a regulated or clinical release; software tests cannot substitute for those reviews.
-
-## Operations
-
-SQL migrations under `database/migrations` are deterministic and transactional. Production should run them as a one-shot release job before rolling out the API. Backup and restore helpers are in `scripts/`; deployment-specific retention, encryption keys, observability, mail/object-storage credentials, and incident response remain operator responsibilities.
-
-Troubleshooting:
-
-- API not ready: inspect `docker compose logs migrate seed api postgres`.
-- Web cannot reach API: verify `API_INTERNAL_URL=http://api:3001/api/v1` in Compose.
-- Port conflict: change `WEB_PORT` or `API_PORT`, and update `WEB_ORIGIN` to match.
-- Browser tests on a fresh CI host: install engines with `pnpm --filter @be-human/e2e exec playwright install --with-deps chromium firefox webkit`.
-
-The precise shipped scope and remaining release gates are maintained in `docs/implementation-status.md`.
+Read the [implementation status](docs/implementation-status.md), [truth matrix](docs/audit-truth-matrix.md), and [architecture overview](docs/architecture/overview.md) before a public release. Scientific, legal, security, privacy, and accessibility review remain necessary.

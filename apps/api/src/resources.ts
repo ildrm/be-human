@@ -10,7 +10,7 @@ import {
 import type { FastifyRequest } from 'fastify';
 import { CsrfGuard, SessionGuard, currentUser } from './auth.js';
 import { DbService } from './db.service.js';
-import { ResourcePolicyService } from './households.js';
+import { ResourcePolicyService, effectiveSharingCondition } from './households.js';
 
 const goalLevels = ['value', 'direction', 'outcome', 'project', 'behaviour', 'habit', 'action'] as const;
 const goalStatuses = ['active', 'paused', 'completed', 'archived'] as const;
@@ -127,13 +127,14 @@ export class PrivacyController {
   constructor(private readonly db: DbService) {}
   @Get('summary') async summary(@Req() request: FastifyRequest) {
     const userId = currentUser(request).id;
-    const [goals, metrics, assessments, shares] = await Promise.all([
+    const [goals, metrics, assessments, shares, account] = await Promise.all([
       this.db.query<{ count: string }>('SELECT count(*) FROM goal WHERE user_id=$1', [userId]),
       this.db.query<{ count: string }>('SELECT count(*) FROM metric_observation WHERE user_id=$1', [userId]),
       this.db.query<{ count: string }>('SELECT count(*) FROM wellbeing_assessment WHERE user_id=$1', [userId]),
-      this.db.query<{ count: string }>('SELECT count(*) FROM sharing_permission WHERE owner_user_id=$1 AND revoked_at IS NULL', [userId]),
+      this.db.query<{ count: string }>(`SELECT count(*) FROM sharing_permission s WHERE s.owner_user_id=$1 AND ${effectiveSharingCondition}`, [userId]),
+      this.db.query<{ status: string }>('SELECT status FROM app_user WHERE id=$1', [userId]),
     ]);
-    return { data: { goals: Number(goals.rows[0]!.count), metrics: Number(metrics.rows[0]!.count), assessments: Number(assessments.rows[0]!.count), activeShares: Number(shares.rows[0]!.count), privacyDefault: 'private' } };
+    return { data: { goals: Number(goals.rows[0]!.count), metrics: Number(metrics.rows[0]!.count), assessments: Number(assessments.rows[0]!.count), activeShares: Number(shares.rows[0]!.count), privacyDefault: 'private', accountStatus: account.rows[0]?.status ?? 'unknown' } };
   }
   @Get('requests') async requests(@Req() request: FastifyRequest) {
     const result = await this.db.query(`SELECT id,request_type AS "requestType",status,requested_at AS "requestedAt",available_at AS "availableAt",completed_at AS "completedAt",cancelled_at AS "cancelledAt",error_code AS "errorCode" FROM data_request WHERE user_id=$1 ORDER BY requested_at DESC`, [currentUser(request).id]);

@@ -2,19 +2,20 @@ import {
   Body, Controller, Delete, Get, HttpCode, Injectable, NotFoundException, Param, Patch, Post, Query, Req, UseGuards,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from 'class-validator';
 import type { FastifyRequest } from 'fastify';
+import { PLAN_CATEGORIES } from '@be-human/domain';
 import { CsrfGuard, SessionGuard, currentUser } from './auth.js';
 import { DbService } from './db.service.js';
 
 const modes = ['stability', 'growth', 'recovery', 'survival'] as const;
 const itemStatuses = ['planned', 'completed', 'skipped'] as const;
-const categories = ['sleep', 'care', 'work', 'recovery', 'movement', 'personal', 'buffer', 'connection'] as const;
+const categories = PLAN_CATEGORIES;
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 class WeekQueryDto {
-  @IsOptional() @Matches(datePattern) start?: string;
+  @IsOptional() @Matches(datePattern) @IsISO8601({ strict: true }) start?: string;
 }
 
 class PlanIdDto {
@@ -25,8 +26,8 @@ class ItemIdDto {
   @IsUUID() id!: string;
 }
 
-class CreatePlanItemDto {
-  @Matches(datePattern) planDate!: string;
+export class CreatePlanItemDto {
+  @Matches(datePattern) @IsISO8601({ strict: true }) planDate!: string;
   @IsString() @Length(1, 160) title!: string;
   @Matches(timePattern) startTime!: string;
   @IsInt() @Min(5) @Max(1_440) durationMinutes!: number;
@@ -96,8 +97,8 @@ export class DailyPlanService {
         const profile = await client.query<{ timezone: string }>('SELECT timezone FROM app_user WHERE id=$1', [userId]);
         const created = await client.query<{ id: string }>(`
           INSERT INTO plan(user_id,plan_date,timezone,operating_mode,feasible,model_version,explanation)
-          VALUES ($1,$2,$3,$4,true,'manual-v1',$5) RETURNING id
-        `, [userId, input.planDate, profile.rows[0]?.timezone ?? 'UTC', input.mode ?? 'stability', JSON.stringify({ source: 'manual', bufferMinutes: 0 })]);
+          VALUES ($1,$2,$3,$4,NULL,'manual-v1',$5) RETURNING id
+        `, [userId, input.planDate, profile.rows[0]?.timezone ?? 'UTC', input.mode ?? 'stability', JSON.stringify({ source: 'manual', bufferMinutes: 0, constraintCheck: 'not_assessed' })]);
         planId = created.rows[0]!.id;
       }
       const demand = JSON.stringify({ detail: input.detail ?? 'Added by you', category: input.category ?? 'personal', source: 'manual' });
@@ -108,6 +109,7 @@ export class DailyPlanService {
         FROM plan p WHERE p.id=$1
         RETURNING id,title,starts_at AS "startsAt",ends_at AS "endsAt",fixed,essential,status,demand
       `, [planId, input.title.trim(), input.startTime, input.durationMinutes, input.fixed ?? false, input.essential ?? false, demand]);
+      await client.query(`UPDATE plan SET feasible=NULL,explanation=explanation||'{"constraintCheck":"stale"}'::jsonb WHERE id=$1`, [planId]);
       await client.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'create','plan_item',$2,$3)`, [userId, item.rows[0]!.id, requestId ?? null]);
       return item.rows[0]!;
     });
@@ -117,7 +119,8 @@ export class DailyPlanService {
     const demandPatch: Record<string, string> = {};
     if (input.detail !== undefined) demandPatch.detail = input.detail;
     if (input.category !== undefined) demandPatch.category = input.category;
-    const result = await this.db.query<PlanItemRow>(`
+    return this.db.transaction(async (client) => {
+      const result = await client.query<PlanItemRow>(`
       UPDATE plan_item i SET
         title=COALESCE($1,i.title),
         starts_at=CASE WHEN $2::text IS NULL THEN i.starts_at ELSE (p.plan_date+$2::time) AT TIME ZONE p.timezone END,
@@ -127,21 +130,26 @@ export class DailyPlanService {
       FROM plan p
       WHERE i.plan_id=p.id AND p.user_id=$7 AND i.id=$8
       RETURNING i.id,i.title,i.starts_at AS "startsAt",i.ends_at AS "endsAt",i.fixed,i.essential,i.status,i.demand
-    `, [input.title?.trim() ?? null, input.startTime ?? null, input.durationMinutes ?? null, input.status ?? null, input.essential ?? null, JSON.stringify(demandPatch), userId, id]);
-    const item = result.rows[0];
-    if (!item) throw new NotFoundException('Plan item not found.');
-    await this.db.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'update','plan_item',$2,$3)`, [userId, id, requestId ?? null]);
-    return item;
+      `, [input.title?.trim() ?? null, input.startTime ?? null, input.durationMinutes ?? null, input.status ?? null, input.essential ?? null, JSON.stringify(demandPatch), userId, id]);
+      const item = result.rows[0];
+      if (!item) throw new NotFoundException('Plan item not found.');
+      await client.query(`UPDATE plan SET feasible=NULL,explanation=explanation||'{"constraintCheck":"stale"}'::jsonb WHERE id=(SELECT plan_id FROM plan_item WHERE id=$1)`, [id]);
+      await client.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'update','plan_item',$2,$3)`, [userId, id, requestId ?? null]);
+      return item;
+    });
   }
 
   async deleteItem(userId: string, id: string, requestId?: string): Promise<void> {
-    const result = await this.db.query(`DELETE FROM plan_item i USING plan p WHERE i.plan_id=p.id AND p.user_id=$1 AND i.id=$2 RETURNING i.id`, [userId, id]);
-    if (!result.rowCount) throw new NotFoundException('Plan item not found.');
-    await this.db.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'delete','plan_item',$2,$3)`, [userId, id, requestId ?? null]);
+    await this.db.transaction(async (client) => {
+      const result = await client.query<{ planId: string }>(`DELETE FROM plan_item i USING plan p WHERE i.plan_id=p.id AND p.user_id=$1 AND i.id=$2 RETURNING i.plan_id AS "planId"`, [userId, id]);
+      if (!result.rowCount) throw new NotFoundException('Plan item not found.');
+      await client.query(`UPDATE plan SET feasible=NULL,explanation=explanation||'{"constraintCheck":"stale"}'::jsonb WHERE id=$1`, [result.rows[0]!.planId]);
+      await client.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'delete','plan_item',$2,$3)`, [userId, id, requestId ?? null]);
+    });
   }
 
   async updateMode(userId: string, id: string, mode: (typeof modes)[number], requestId?: string) {
-    const result = await this.db.query(`UPDATE plan SET operating_mode=$1,created_at=now() WHERE id=$2 AND user_id=$3 RETURNING id,operating_mode AS mode`, [mode, id, userId]);
+    const result = await this.db.query(`UPDATE plan SET operating_mode=$1,feasible=NULL,explanation=explanation||'{"constraintCheck":"stale"}'::jsonb,created_at=now() WHERE id=$2 AND user_id=$3 RETURNING id,operating_mode AS mode`, [mode, id, userId]);
     if (!result.rows[0]) throw new NotFoundException('Plan not found.');
     await this.db.query(`INSERT INTO audit_log(actor_user_id,action,resource_type,resource_id,request_id) VALUES ($1,'update_mode','plan',$2,$3)`, [userId, id, requestId ?? null]);
     return result.rows[0];

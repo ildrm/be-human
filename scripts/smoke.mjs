@@ -4,23 +4,25 @@ import pg from 'pg';
 const webOrigin = process.env.SMOKE_WEB_ORIGIN ?? 'http://localhost:3000';
 const apiOrigin = process.env.SMOKE_API_ORIGIN ?? 'http://localhost:3001';
 const cookies = new Map();
+const memberCookies = new Map();
 const testEmail = `smoke-${randomUUID()}@example.test`;
 let userId;
+let memberUserId;
 let householdId;
 
-function captureCookies(response) {
+function captureCookies(response, jar) {
   const values = response.headers.getSetCookie?.() ?? [];
   for (const value of values) {
     const match = /^([^=]+)=([^;]*)/.exec(value);
-    if (match) cookies.set(match[1], match[2]);
+    if (match) jar.set(match[1], match[2]);
   }
 }
 
-async function request(path, init = {}) {
+async function request(path, init = {}, jar = cookies) {
   const headers = new Headers(init.headers);
-  if (cookies.size) headers.set('cookie', [...cookies].map(([key, value]) => `${key}=${value}`).join('; '));
+  if (jar.size) headers.set('cookie', [...jar].map(([key, value]) => `${key}=${value}`).join('; '));
   const response = await fetch(`${webOrigin}${path}`, { ...init, headers, redirect: 'manual' });
-  captureCookies(response);
+  captureCookies(response, jar);
   return response;
 }
 
@@ -61,6 +63,21 @@ try {
 
   const household = await request('/api/backend/households', { method: 'POST', headers: writeHeaders, body: JSON.stringify({ name: 'Smoke household' }) });
   expect(household, 201, 'household creation'); householdId = (await household.json()).data.id;
+  const memberRegister = await request('/api/backend/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: `member-${testEmail}`, password: 'Smoke-test-password-2!' }) }, memberCookies);
+  expect(memberRegister, 201, 'second account registration'); memberUserId = (await memberRegister.json()).user.id;
+  expect(await request(`/api/backend/goals/shared/${userId}`, {}, memberCookies), 404, 'membership alone does not share goals');
+  const invitation = await request(`/api/backend/households/${householdId}/invitations`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ role: 'member' }) });
+  expect(invitation, 201, 'household invitation'); const inviteToken = (await invitation.json()).data.token;
+  const memberWriteHeaders = { 'content-type': 'application/json', 'x-csrf-token': decodeURIComponent(memberCookies.get('bh_csrf')) };
+  expect(await request('/api/backend/households/invitations/accept', { method: 'POST', headers: memberWriteHeaders, body: JSON.stringify({ token: inviteToken }) }, memberCookies), 201, 'invitation acceptance');
+  expect(await request(`/api/backend/goals/shared/${userId}`, {}, memberCookies), 404, 'membership without grant stays private');
+  const grant = await request(`/api/backend/households/${householdId}/sharing`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ granteeUserId: memberUserId, resourceType: 'goal', permission: 'view' }) });
+  expect(grant, 201, 'goal-view grant');
+  const sharedGoals = await request(`/api/backend/goals/shared/${userId}`, {}, memberCookies);
+  expect(sharedGoals, 200, 'explicit grant shares goals');
+  if (!(await sharedGoals.json()).data.some((item) => item.title === 'Protect enough recovery')) throw new Error('shared goal missing from grantee view');
+  const sharingSummary = await request('/api/backend/privacy/summary');
+  if ((await sharingSummary.json()).data.activeShares !== 1) throw new Error('privacy summary did not count the effective grant');
 
   const exportRequest = await request('/api/backend/privacy/requests', { method: 'POST', headers: writeHeaders, body: JSON.stringify({ requestType: 'export' }) });
   expect(exportRequest, 201, 'export request'); const exportId = (await exportRequest.json()).data.id;
@@ -72,14 +89,27 @@ try {
   }
   if (!exported?.data?.goals?.some((item) => item.title === 'Protect enough recovery')) throw new Error('worker export did not include the owned goal');
 
+  const deletionRequest = await request('/api/backend/privacy/requests', { method: 'POST', headers: writeHeaders, body: JSON.stringify({ requestType: 'deletion' }) });
+  expect(deletionRequest, 201, 'deletion request');
+  const deletionId = (await deletionRequest.json()).data.id;
+  expect(await request('/api/backend/today'), 403, 'pending deletion blocks planning');
+  expect(await request('/api/backend/privacy/requests'), 200, 'pending deletion permits privacy review');
+  expect(await request(`/api/backend/goals/shared/${userId}`, {}, memberCookies), 404, 'pending deletion suspends shared access');
+  const cancellation = await request(`/api/backend/privacy/requests/${deletionId}`, { method: 'DELETE', headers: { 'x-csrf-token': csrf } });
+  expect(cancellation, 204, 'deletion cancellation');
+  expect(await request('/api/backend/today'), 200, 'cancelled deletion restores planning');
+  expect(await request(`/api/backend/goals/shared/${userId}`, {}, memberCookies), 200, 'cancelling deletion restores the grant');
+
+  expect(await request('/api/backend/auth/logout', { method: 'POST', headers: { 'x-csrf-token': memberWriteHeaders['x-csrf-token'] } }, memberCookies), 204, 'member logout');
   expect(await request('/api/backend/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }), 204, 'logout');
   expect(await request('/api/backend/auth/me'), 401, 'revoked session');
-  process.stdout.write('HTTP smoke journey passed: pages, readiness, auth, CSRF, owned goal, household, worker export, logout.\n');
+  process.stdout.write('HTTP smoke journey passed: pages, auth, CSRF, owned goal, invitation, explicit sharing, worker export, deletion restriction/cancellation, logout.\n');
 } finally {
   if (pool && userId) {
     await pool.query(`DELETE FROM job_outbox WHERE actor_user_id=$1::uuid OR payload->>'userId'=$1::text`, [userId]);
     if (householdId) await pool.query('DELETE FROM household WHERE id=$1', [householdId]);
     await pool.query('DELETE FROM app_user WHERE id=$1', [userId]);
   }
+  if (pool && memberUserId) await pool.query('DELETE FROM app_user WHERE id=$1', [memberUserId]);
   await pool?.end();
 }
